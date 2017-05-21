@@ -44,6 +44,7 @@ const (
 var (
 	peers    = newPeerMap()
 	paclanId = generateRandomTag()
+	debug    = false
 )
 
 type peerMap struct {
@@ -136,6 +137,7 @@ func (p peerMap) GetPeerList() []string {
 func main() {
 	destAddrsPtr := flag.String("addrs", "", "additional, static peer addresses")
 	mcAddrPtr := flag.String("multicast", DEF_MULTICAST_ADDRESS, "multicast address")
+	flag.BoolVar(&debug, "v", false, "show debug output")
 	flag.Parse()
 	
 	go serveMulticast(*mcAddrPtr, *destAddrsPtr)
@@ -143,13 +145,8 @@ func main() {
 
 	go func() {
 		for _ = range time.Tick(10 * time.Minute) {
-			peers.Lock()
-			peerSlice := make([]string, 0, len(peers.peers))
-			for peer, _ := range peers.peers {
-				peerSlice = append(peerSlice, peer)
-			}
-			log.Printf("Got %d peers: %s\n", len(peerSlice), strings.Join(peerSlice, ","))
-			peers.Unlock()
+			peerlist := peers.GetPeerList()
+			log.Printf("Got %d peers: %s\n", len(peerlist), strings.Join(peerlist, ","))
 		}
 	}()
 
@@ -206,18 +203,18 @@ func handleLocal(w http.ResponseWriter, r *http.Request) {
 		resp, err := http.Head(newUrl.String())
 		if err == nil {
 			if r.Method == "HEAD" {
-				log.Printf("Handling local HEAD request, status=%d, url=%s\n", resp.StatusCode, newUrl.String())
+				if debug{log.Printf("Handling local HEAD request, status=%d, url=%s\n", resp.StatusCode, newUrl.String())}
 				w.WriteHeader(resp.StatusCode)
 				return
 			} else if r.Method == "GET" && resp.StatusCode == http.StatusOK {
-				log.Printf("Handling local GET request, status=%d, url=%s\n", resp.StatusCode, newUrl.String())
+				if debug{log.Printf("Handling local GET request, status=%d, url=%s\n", resp.StatusCode, newUrl.String())}
 				http.Redirect(w, r, newUrl.String(), http.StatusFound)
 				return
 			}
 		}
 	}
 
-	log.Printf("No match for local request, url=%s\n", r.URL.String())
+	if debug{log.Printf("No match for local request, url=%s\n", r.URL.String())}
 	w.WriteHeader(http.StatusNotFound)
 }
 
@@ -228,16 +225,16 @@ func handleRemote(w http.ResponseWriter, r *http.Request) {
 	
 	if err == nil {
 		if r.Method == "HEAD" {
-			log.Printf("[%s] Remote HEAD request success, path=%s\n", r.RemoteAddr, r.URL.Path)
+			if debug{log.Printf("[%s] Remote HEAD request success, path=%s\n", r.RemoteAddr, r.URL.Path)}
 			w.WriteHeader(http.StatusOK)
 		} else if r.Method == "GET" {
-			log.Printf("[%s] Serving file, path=%s\n", r.RemoteAddr, r.URL.Path)
+			if debug{log.Printf("[%s] Serving file, path=%s\n", r.RemoteAddr, r.URL.Path)}
 			http.ServeFile(w, r, fpath)
 		}
 		return
 	}
 
-	log.Printf("[%s] Not found, path=%s\n", r.RemoteAddr, r.URL.Path)
+	if debug{log.Printf("[%s] Not found, path=%s\n", r.RemoteAddr, r.URL.Path)}
 	w.WriteHeader(http.StatusNotFound)
 }
 
@@ -299,7 +296,7 @@ func (mc multicaster) sendAnnounce(typ string, nonce string, peerlist []string) 
 	raw := buildAnnounce(typ, nonce, peerlist)
 	if raw == nil { return }
 	for _, addr := range mc.addrs {
-		log.Printf("Sending type=%s to ip=%s\n", typ, addr.String())
+		if debug{log.Printf("Sending type=%s to ip=%s\n", typ, addr.String())}
 		mc.conn.WriteToUDP(raw, addr)
 	}
 }
@@ -311,7 +308,7 @@ func (mc multicaster) sendAnnounceTo(destIP string, typ string, nonce string, pe
 		log.Printf("Invalid target address %s: %s\n", destIP, err)
 		return
 	}
-	log.Printf("Sending type=%s to ip=%s\n", typ, destIP)
+	if debug{log.Printf("Sending type=%s to ip=%s\n", typ, destIP)}
 	mc.conn.WriteToUDP(raw, addr)
 }
 func buildAnnounce(typ string, nonce string, peerlist []string)  []byte{
@@ -336,18 +333,18 @@ func onPeerFound(peerIp string, peerHttp string, peerPaclanId string) {
 	resp, err := http.Head("http://" + peerHttp)
 	if err == nil {
 		if resp.Header.Get("X-Paclan-ID") == peerPaclanId {
-			log.Printf("New peer verified with id=%s, url=http://%s\n", peerPaclanId, peerHttp)
+			if debug{log.Printf("New peer verified with id=%s, url=http://%s\n", peerPaclanId, peerHttp)}
 			peers.Add(peerIp, peerHttp, peerPaclanId)
 		} else {
-			log.Printf("Peer verification failed, udp_id=%s, http_id=%s, url=http://%s\n",
-				peerPaclanId, resp.Header.Get("X-Paclan-ID"), peerHttp)
+			if debug{log.Printf("Peer verification failed, udp_id=%s, http_id=%s, url=http://%s\n",
+				peerPaclanId, resp.Header.Get("X-Paclan-ID"), peerHttp)}
 		}
 	}
 }
 
 func (mc multicaster) discoverPeers(discopeers []string) {
 	for _, peer := range discopeers {
-		log.Printf("discoverPeer: %s\n", peer)
+		if debug{log.Printf("discoverPeer: %s\n", peer)}
 		data := strings.SplitN(peer, "@", 2)
 		if data[0] != paclanId && peers.ShouldRenew(data[1]){
 			mc.sendAnnounceTo( data[1] , "PING", "", []string{} )
@@ -377,12 +374,12 @@ func (mc multicaster) listenLoop() {
 		}
 		peerIp := from.IP.String()
 		peerHttp := net.JoinHostPort(peerIp, msg.HttpPort)
-		log.Printf("Received message type=%s, from peer=%s\n", msg.Type, peerIp)
+		if debug{log.Printf("Received message type=%s, from peer=%s\n", msg.Type, peerIp)}
 		switch msg.Type {
 		case "PING":
 			mypeers := peers.GetPeerList()
-			mc.sendAnnounceTo(peerIp, "PONG", "", mypeers)
 			onPeerFound(peerIp, peerHttp, msg.Id)
+			mc.sendAnnounceTo(peerIp, "PONG", "", mypeers)
 			mc.discoverPeers(msg.Peers)
 		case "PONG":
 			//mc.sendAnnounceWithTag("ACK", "", mypeers)
