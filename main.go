@@ -43,18 +43,23 @@ const (
 
 var (
 	peers    = newPeerMap()
-	seenTags = newTagMap()
+	paclanId = generateRandomTag()
 )
 
 type peerMap struct {
 	sync.Mutex
-	peers  map[string]struct{}
+	peers  map[string]peerInfo
 	expire chan string
 }
-
+type peerInfo struct {
+	httpOrigin string
+	expire time.Time
+	renew time.Time
+	id string
+}
 func newPeerMap() peerMap {
 	p := peerMap{
-		peers:  make(map[string]struct{}),
+		peers:  make(map[string]peerInfo),
 		expire: make(chan string),
 	}
 	go p.expireLoop()
@@ -67,75 +72,69 @@ func (p peerMap) expireLoop() {
 		select {
 		case peer := <-p.expire:
 			p.Lock()
-			delete(p.peers, peer)
+			if time.Now().Before(p.peers[peer].expire) {
+				delete(p.peers, peer)
+			}
 			p.Unlock()
 		}
 	}
 }
 
-func (p peerMap) Add(peer string) {
+func (p peerMap) Add(peer string, httpServer string) {
 	p.Lock()
-	p.peers[peer] = struct{}{}
+	p.peers[peer] = peerInfo {
+		expire: time.Now().Add(TTL),
+		renew: time.Now().Add(MULTICAST_DELAY),
+		httpOrigin: httpServer,
+	}
 	time.AfterFunc(TTL, func() { p.expire <- peer })
 	p.Unlock()
 }
 
-func (p peerMap) GetRandomOrder() []string {
+func (p peerMap) Has(peerIp string) bool {
+	p.Lock()
+	_, has := p.peers[peerIp]
+	p.Unlock()
+	return has
+}
+func (p peerMap) ShouldRenew(peerIp string) bool {
+	p.Lock()
+	peer, has := p.peers[peerIp]
+	p.Unlock()
+	return !has || time.Now().Before(peer.renew) 
+}
+
+func (p peerMap) GetHttpHostsInRandomOrder() []string {
 	p.Lock()
 
 	peers := make([]string, len(p.peers))
-	for peer := range p.peers {
+	for _, peer := range p.peers {
 		max := big.NewInt(int64(len(peers)))
 		idx, err := rand.Int(rand.Reader, max)
 		if err != nil {
 			log.Printf("Couldn't get random int: %s\n", err)
 			continue
 		}
-		peers[idx.Int64()] = peer
+		peers[idx.Int64()] = peer.httpOrigin
 	}
 
 	p.Unlock()
 
 	return peers
 }
+func (p peerMap) GetPeerList() []string {
+	p.Lock()
 
-type TagMap struct {
-	sync.Mutex
-	tags   map[string]struct{}
-	expire chan string
-}
-
-func newTagMap() TagMap {
-	t := TagMap{
-		tags:   make(map[string]struct{}),
-		expire: make(chan string),
+	peers := make([]string, len(p.peers))
+	i := 0
+	for ip, peer := range p.peers {
+		peers[i] = peer.id + "@" + ip
+		i += 1
 	}
 
-	go func() {
-		for {
-			select {
-			case tag := <-t.expire:
-				delete(t.tags, tag)
-			}
-		}
-	}()
+	p.Unlock()
 
-	return t
-}
-
-func (t TagMap) Mark(tag string) {
-	t.Lock()
-	t.tags[tag] = struct{}{}
-	time.AfterFunc(TTL, func() { t.expire <- tag })
-	t.Unlock()
-}
-
-func (t TagMap) IsNew(tag string) bool {
-	t.Lock()
-	_, ok := t.tags[tag]
-	t.Unlock()
-
-	return !ok
+	return peers
 }
 
 func main() {
@@ -167,6 +166,17 @@ func main() {
 	}
 }
 
+func generateRandomTag() string {
+	tagRaw := make([]byte, 8)
+	_, err := rand.Read(tagRaw)
+	if err != nil {
+		log.Printf("Couldn't create tag: %s\n", err)
+		return ""
+	}
+
+	return hex.EncodeToString(tagRaw)
+}
+
 func serveHttp() {
 	http.Handle("/", http.HandlerFunc(handle))
 
@@ -183,7 +193,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error serving %s: %s\n", r.RemoteAddr, err)
 		return
 	}
-
+	
 	if addr.IP.IsLoopback() {
 		handleLocal(w, r)
 	} else {
@@ -192,7 +202,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLocal(w http.ResponseWriter, r *http.Request) {
-	for _, peer := range peers.GetRandomOrder() {
+	for _, peer := range peers.GetHttpHostsInRandomOrder() {
 		newUrl := *r.URL
 		newUrl.Host = peer
 		newUrl.Scheme = "http"
@@ -200,37 +210,47 @@ func handleLocal(w http.ResponseWriter, r *http.Request) {
 		resp, err := http.Head(newUrl.String())
 		if err == nil {
 			if r.Method == "HEAD" {
+				log.Printf("Handling local HEAD request, status=%d, url=%s\n", resp.StatusCode, newUrl.String())
 				w.WriteHeader(resp.StatusCode)
 				return
 			} else if r.Method == "GET" && resp.StatusCode == http.StatusOK {
+				log.Printf("Handling local GET request, status=%d, url=%s\n", resp.StatusCode, newUrl.String())
 				http.Redirect(w, r, newUrl.String(), http.StatusFound)
 				return
 			}
 		}
 	}
 
+	log.Printf("No match for local request, url=%s\n", r.URL.String())
 	w.WriteHeader(http.StatusNotFound)
 }
 
 func handleRemote(w http.ResponseWriter, r *http.Request) {
 	fpath := path.Join(PKG_CACHE_DIR, path.Base(r.URL.Path))
 	_, err := os.Stat(fpath)
-
+	r.Header.Add("X-Paclan-ID", paclanId)
+	
 	if err == nil {
 		if r.Method == "HEAD" {
+			log.Printf("[%s] Remote HEAD request success, path=%s\n", r.RemoteAddr, r.URL.Path)
 			w.WriteHeader(http.StatusOK)
 		} else if r.Method == "GET" {
+			log.Printf("[%s] Serving file, path=%s\n", r.RemoteAddr, r.URL.Path)
 			http.ServeFile(w, r, fpath)
 		}
 		return
 	}
 
+	log.Printf("[%s] Not found, path=%s\n", r.RemoteAddr, r.URL.Path)
 	w.WriteHeader(http.StatusNotFound)
 }
 
 type Announce struct {
-	Port string `json:"port"`
-	Tag  string `json:"tag"`
+	Type  string `json:"TYPE"`
+	HttpPort string `json:"PORT"`
+	Id string `json:"ID"`
+	Nonce string `json:"NONCE"`
+	Peers []string `json:"PEERS"`
 }
 
 type multicaster struct {
@@ -266,36 +286,63 @@ func serveMulticast(multicastAddrOption string, destAddrOption string) {
 func (mc multicaster) run() {
 	go mc.listenLoop()
 
-	mc.sendAnnounce()
+	mc.sendAnnounce("PING", "", []string{})
 	for {
 		<-time.After(MULTICAST_DELAY)
-		mc.sendAnnounce()
+		mypeers := peers.GetPeerList()
+		mc.sendAnnounce("PING", "", mypeers)
 	}
 }
 
-func (mc multicaster) sendAnnounce() {
-	tagRaw := make([]byte, 8)
-	_, err := rand.Read(tagRaw)
-	if err != nil {
-		log.Printf("Couldn't create tag: %s\n", err)
-		return
-	}
 
-	tag := hex.EncodeToString(tagRaw)
-	mc.sendAnnounceWithTag(tag)
-}
-
-func (mc multicaster) sendAnnounceWithTag(tag string) {
-	msg := Announce{Port: HTTP_PORT, Tag: tag}
-	raw, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("Couldn't serialize announce: %s\n", err)
-		return
-	}
+func (mc multicaster) sendAnnounce(typ string, nonce string, peerlist []string) {
+	raw := buildAnnounce(typ, nonce, peerlist)
 	for _, addr := range mc.addrs {
 		mc.conn.WriteToUDP(raw, addr)
 	}
-	seenTags.Mark(msg.Tag)
+}
+func buildAnnounce(typ string, nonce string, peerlist []string)  []byte{
+	msg := Announce{HttpPort: HTTP_PORT, Type: typ, Nonce: "", Id: paclanId, Peers: peerlist}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("Couldn't serialize announce: %s\n", err)
+		return nil
+	}
+	return raw
+}
+
+func onPeerFound(peerIp string, peerHttp string, peerPaclanId string) {
+	if peerPaclanId == paclanId {
+		// don't talk to myself...
+		return
+	}
+	if peers.Has(peerIp) {
+		peers.Add(peerIp, peerHttp)
+		return
+	}
+	resp, err := http.Head("http://" + peerHttp)
+	if err == nil {
+		if resp.Header.Get("X-Paclan-ID") == peerPaclanId {
+			log.Printf("New peer verified with id=%s, url=http://%s\n", peerHttp, paclanId)
+			peers.Add(peerIp, peerHttp)
+		}
+	}
+}
+
+func (mc multicaster) discoverPeers(discopeers []string) {
+	raw_msg := buildAnnounce("PING", "", []string{})
+	if raw_msg == nil { return }
+	
+	for _, peer := range discopeers {
+		data := strings.SplitN(peer, "@", 2)
+		if data[0] != paclanId && peers.ShouldRenew(data[1]){
+			discoverTarget, err := net.ResolveUDPAddr("udp4", data[1] + ":15679")
+			if err != nil {
+				return
+			}
+			mc.conn.WriteToUDP(raw_msg, discoverTarget)
+		}
+	}
 }
 
 func (mc multicaster) listenLoop() {
@@ -314,11 +361,19 @@ func (mc multicaster) listenLoop() {
 			continue
 		}
 
-		if seenTags.IsNew(msg.Tag) {
-			mc.sendAnnounceWithTag(msg.Tag)
+		peerIp := from.IP.String()
+		peerHttp := net.JoinHostPort(peerIp, msg.HttpPort)
+		log.Printf("Received message type=%s, from peer=%s\n", msg.Type, peerIp)
+		switch msg.Type {
+		case "PING":
+			mypeers := peers.GetPeerList()
+			mc.sendAnnounce("PONG", "", mypeers)
+			onPeerFound(peerIp, peerHttp, msg.Id)
+			mc.discoverPeers(msg.Peers)
+		case "PONG":
+			//mc.sendAnnounceWithTag("ACK", "", mypeers)
+			onPeerFound(peerIp, peerHttp, msg.Id)
+			mc.discoverPeers(msg.Peers)
 		}
-		peer := net.JoinHostPort(from.IP.String(), msg.Port)
-		log.Printf("New peer: %s\n", peer)
-		peers.Add(peer)
 	}
 }
