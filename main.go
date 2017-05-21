@@ -136,13 +136,13 @@ func (p peerMap) GetPeerList() []string {
 
 func main() {
 	destAddrsPtr := flag.String("addrs", "", "additional, static peer addresses")
-	mcAddrPtr := flag.String("multicast", DEF_MULTICAST_ADDRESS, "multicast address")
+	//mcAddrPtr := flag.String("multicast", DEF_MULTICAST_ADDRESS, "multicast address")
 	flag.BoolVar(&debug, "v", false, "show debug output")
 	flag.Parse()
 	
 	log.Printf("my id is %s\n", paclanId)
 	
-	go serveMulticast(*mcAddrPtr, *destAddrsPtr)
+	go serveMulticast(DEF_MULTICAST_ADDRESS, *destAddrsPtr)
 	go serveHttp()
 
 	go func() {
@@ -258,9 +258,10 @@ func serveMulticast(multicastAddrOption string, destAddrOption string) {
 	if destAddrOption == "" { destHosts = []string{} }
 	destIPList := make([]*net.UDPAddr, len(destHosts)+1)
 	for i := 0; i < len(destHosts); i++ {
-		a, err := net.ResolveUDPAddr("udp4", destHosts[i])
+		a, err := net.ResolveUDPAddr("udp4", destHosts[i] + ":15679")
 		if err != nil {
-			return
+			log.Printf("Couldn't parse address '%s': %s\n", destHosts[i], err)
+			destIPList[i+1] = nil
 		} else {
 			destIPList[i+1] = a
 		}
@@ -298,6 +299,7 @@ func (mc multicaster) sendAnnounce(typ string, nonce string, peerlist []string) 
 	raw := buildAnnounce(typ, nonce, peerlist)
 	if raw == nil { return }
 	for _, addr := range mc.addrs {
+		if addr == nil { continue }
 		if debug{log.Printf("Sending type=%s to ip=%s\n", typ, addr.String())}
 		mc.conn.WriteToUDP(raw, addr)
 	}
