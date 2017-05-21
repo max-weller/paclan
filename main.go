@@ -228,7 +228,7 @@ func handleLocal(w http.ResponseWriter, r *http.Request) {
 func handleRemote(w http.ResponseWriter, r *http.Request) {
 	fpath := path.Join(PKG_CACHE_DIR, path.Base(r.URL.Path))
 	_, err := os.Stat(fpath)
-	r.Header.Add("X-Paclan-ID", paclanId)
+	w.Header().Add("X-Paclan-ID", paclanId)
 	
 	if err == nil {
 		if r.Method == "HEAD" {
