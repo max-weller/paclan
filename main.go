@@ -140,6 +140,8 @@ func main() {
 	flag.BoolVar(&debug, "v", false, "show debug output")
 	flag.Parse()
 	
+	log.Printf("my id is %s\n", paclanId)
+	
 	go serveMulticast(*mcAddrPtr, *destAddrsPtr)
 	go serveHttp()
 
@@ -377,8 +379,8 @@ func (mc multicaster) listenLoop() {
 		if debug{log.Printf("Received message type=%s, from peer=%s\n", msg.Type, peerIp)}
 		switch msg.Type {
 		case "PING":
-			mypeers := peers.GetPeerList()
 			onPeerFound(peerIp, peerHttp, msg.Id)
+			mypeers := peers.GetPeerList()
 			mc.sendAnnounceTo(peerIp, "PONG", "", mypeers)
 			mc.discoverPeers(msg.Peers)
 		case "PONG":
