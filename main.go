@@ -76,12 +76,13 @@ func (p peerMap) ExpireOldPeers() {
 	p.Unlock()
 }
 
-func (p peerMap) Add(peer string, httpServer string) {
+func (p peerMap) Add(peer string, httpServer string, id string) {
 	p.Lock()
 	p.peers[peer] = peerInfo {
 		expire: time.Now().Add(TTL),
 		renew: time.Now().Add(MULTICAST_DELAY),
 		httpOrigin: httpServer,
+		id: id,
 	}
 	p.Unlock()
 }
@@ -329,14 +330,14 @@ func onPeerFound(peerIp string, peerHttp string, peerPaclanId string) {
 		return
 	}
 	if peers.Has(peerIp) {
-		peers.Add(peerIp, peerHttp)
+		peers.Add(peerIp, peerHttp, peerPaclanId)
 		return
 	}
 	resp, err := http.Head("http://" + peerHttp)
 	if err == nil {
 		if resp.Header.Get("X-Paclan-ID") == peerPaclanId {
 			log.Printf("New peer verified with id=%s, url=http://%s\n", peerPaclanId, peerHttp)
-			peers.Add(peerIp, peerHttp)
+			peers.Add(peerIp, peerHttp, peerPaclanId)
 		} else {
 			log.Printf("Peer verification failed, udp_id=%s, http_id=%s, url=http://%s\n",
 				peerPaclanId, resp.Header.Get("X-Paclan-ID"), peerHttp)
