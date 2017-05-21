@@ -266,7 +266,7 @@ func serveMulticast(multicastAddrOption string, destAddrOption string) {
 		if err != nil {
 			return
 		} else {
-			destIPList[i] = a
+			destIPList[i+1] = a
 		}
 	}
 	
@@ -274,6 +274,8 @@ func serveMulticast(multicastAddrOption string, destAddrOption string) {
 	if err != nil {
 		return
 	}
+	destIPList[0] = mcAddr
+	
 	conn, err := net.ListenMulticastUDP("udp4", nil, mcAddr)
 	if err != nil {
 		return
@@ -297,6 +299,7 @@ func (mc multicaster) run() {
 
 func (mc multicaster) sendAnnounce(typ string, nonce string, peerlist []string) {
 	raw := buildAnnounce(typ, nonce, peerlist)
+	log.Print(raw)
 	for _, addr := range mc.addrs {
 		mc.conn.WriteToUDP(raw, addr)
 	}
@@ -323,8 +326,11 @@ func onPeerFound(peerIp string, peerHttp string, peerPaclanId string) {
 	resp, err := http.Head("http://" + peerHttp)
 	if err == nil {
 		if resp.Header.Get("X-Paclan-ID") == peerPaclanId {
-			log.Printf("New peer verified with id=%s, url=http://%s\n", peerHttp, paclanId)
+			log.Printf("New peer verified with id=%s, url=http://%s\n", peerPaclanId, peerHttp)
 			peers.Add(peerIp, peerHttp)
+		} else {
+			log.Printf("Peer verification failed, udp_id=%s, http_id=%s, url=http://%s\n",
+				peerPaclanId, resp.Header.Get("X-Paclan-ID"), peerHttp)
 		}
 	}
 }
@@ -334,6 +340,7 @@ func (mc multicaster) discoverPeers(discopeers []string) {
 	if raw_msg == nil { return }
 	
 	for _, peer := range discopeers {
+		log.Printf("discoverPeer: %s\n", peer)
 		data := strings.SplitN(peer, "@", 2)
 		if data[0] != paclanId && peers.ShouldRenew(data[1]){
 			discoverTarget, err := net.ResolveUDPAddr("udp4", data[1] + ":15679")
