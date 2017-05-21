@@ -370,7 +370,7 @@ func (mc multicaster) listenLoop() {
 		
 		if msg.Id == paclanId {
 			log.Printf("Refusing to talk to myself\n")
-			return
+			continue
 		}
 		peerIp := from.IP.String()
 		peerHttp := net.JoinHostPort(peerIp, msg.HttpPort)
