@@ -62,22 +62,18 @@ func newPeerMap() peerMap {
 		peers:  make(map[string]peerInfo),
 		expire: make(chan string),
 	}
-	go p.expireLoop()
 
 	return p
 }
 
-func (p peerMap) expireLoop() {
-	for {
-		select {
-		case peer := <-p.expire:
-			p.Lock()
-			if time.Now().Before(p.peers[peer].expire) {
-				delete(p.peers, peer)
-			}
-			p.Unlock()
+func (p peerMap) ExpireOldPeers() {
+	p.Lock()
+	for ip := range p.peers {
+		if time.Now().Before(p.peers[ip].expire) {
+			delete(p.peers, ip)
 		}
 	}
+	p.Unlock()
 }
 
 func (p peerMap) Add(peer string, httpServer string) {
@@ -87,7 +83,6 @@ func (p peerMap) Add(peer string, httpServer string) {
 		renew: time.Now().Add(MULTICAST_DELAY),
 		httpOrigin: httpServer,
 	}
-	time.AfterFunc(TTL, func() { p.expire <- peer })
 	p.Unlock()
 }
 
@@ -291,6 +286,7 @@ func (mc multicaster) run() {
 	mc.sendAnnounce("PING", "", []string{})
 	for {
 		<-time.After(MULTICAST_DELAY)
+		peers.ExpireOldPeers()
 		mypeers := peers.GetPeerList()
 		mc.sendAnnounce("PING", "", mypeers)
 	}
@@ -299,10 +295,22 @@ func (mc multicaster) run() {
 
 func (mc multicaster) sendAnnounce(typ string, nonce string, peerlist []string) {
 	raw := buildAnnounce(typ, nonce, peerlist)
-	log.Print(raw)
+	if raw == nil { return }
 	for _, addr := range mc.addrs {
+		log.Printf("Sending type=%s to ip=%s\n", typ, addr.String())
 		mc.conn.WriteToUDP(raw, addr)
 	}
+}
+func (mc multicaster) sendAnnounceTo(destIP string, typ string, nonce string, peerlist []string) {
+	raw := buildAnnounce(typ, nonce, peerlist)
+	if raw == nil { return }
+	addr, err := net.ResolveUDPAddr("udp4", destIP + ":15679")
+	if err != nil {
+		log.Printf("Invalid target address %s: %s\n", destIP, err)
+		return
+	}
+	log.Printf("Sending type=%s to ip=%s\n", typ, destIP)
+	mc.conn.WriteToUDP(raw, addr)
 }
 func buildAnnounce(typ string, nonce string, peerlist []string)  []byte{
 	msg := Announce{HttpPort: HTTP_PORT, Type: typ, Nonce: "", Id: paclanId, Peers: peerlist}
@@ -336,18 +344,11 @@ func onPeerFound(peerIp string, peerHttp string, peerPaclanId string) {
 }
 
 func (mc multicaster) discoverPeers(discopeers []string) {
-	raw_msg := buildAnnounce("PING", "", []string{})
-	if raw_msg == nil { return }
-	
 	for _, peer := range discopeers {
 		log.Printf("discoverPeer: %s\n", peer)
 		data := strings.SplitN(peer, "@", 2)
 		if data[0] != paclanId && peers.ShouldRenew(data[1]){
-			discoverTarget, err := net.ResolveUDPAddr("udp4", data[1] + ":15679")
-			if err != nil {
-				return
-			}
-			mc.conn.WriteToUDP(raw_msg, discoverTarget)
+			mc.sendAnnounceTo( data[1] , "PING", "", []string{} )
 		}
 	}
 }
@@ -374,7 +375,7 @@ func (mc multicaster) listenLoop() {
 		switch msg.Type {
 		case "PING":
 			mypeers := peers.GetPeerList()
-			mc.sendAnnounce("PONG", "", mypeers)
+			mc.sendAnnounceTo(peerIp, "PONG", "", mypeers)
 			onPeerFound(peerIp, peerHttp, msg.Id)
 			mc.discoverPeers(msg.Peers)
 		case "PONG":
