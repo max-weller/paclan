@@ -28,11 +28,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"flag"
 )
 
 const (
 	HTTP_PORT         = `15678`
-	MULTICAST_ADDRESS = `224.3.45.67:15679`
+	DEF_MULTICAST_ADDRESS = `224.3.45.67:15679`
 	TTL               = 1 * time.Hour
 	MULTICAST_DELAY   = 10 * time.Minute
 
@@ -138,7 +139,11 @@ func (t TagMap) IsNew(tag string) bool {
 }
 
 func main() {
-	go serveMulticast()
+	destAddrsPtr := flag.String("addrs", "", "additional, static peer addresses")
+	mcAddrPtr := flag.String("multicast", DEF_MULTICAST_ADDRESS, "multicast address")
+	flag.Parse()
+	
+	go serveMulticast(*mcAddrPtr, *destAddrsPtr)
 	go serveHttp()
 
 	go func() {
@@ -230,21 +235,31 @@ type Announce struct {
 
 type multicaster struct {
 	conn *net.UDPConn
-	addr *net.UDPAddr
+	addrs []*net.UDPAddr
 }
 
-func serveMulticast() {
-	addr, err := net.ResolveUDPAddr("udp4", MULTICAST_ADDRESS)
+func serveMulticast(multicastAddrOption string, destAddrOption string) {
+	destHosts := strings.Split(destAddrOption, ",")
+	destIPList := make([]*net.UDPAddr, len(destHosts)+1)
+	for i := 0; i < len(destHosts); i++ {
+		a, err := net.ResolveUDPAddr("udp4", destHosts[i])
+		if err != nil {
+			return
+		} else {
+			destIPList[i] = a
+		}
+	}
+	
+	mcAddr, err := net.ResolveUDPAddr("udp4", multicastAddrOption)
+	if err != nil {
+		return
+	}
+	conn, err := net.ListenMulticastUDP("udp4", nil, mcAddr)
 	if err != nil {
 		return
 	}
 
-	conn, err := net.ListenMulticastUDP("udp4", nil, addr)
-	if err != nil {
-		return
-	}
-
-	mc := multicaster{conn: conn, addr: addr}
+	mc := multicaster{conn: conn, addrs: destIPList}
 	mc.run()
 }
 
@@ -277,8 +292,9 @@ func (mc multicaster) sendAnnounceWithTag(tag string) {
 		log.Printf("Couldn't serialize announce: %s\n", err)
 		return
 	}
-
-	mc.conn.WriteToUDP(raw, mc.addr)
+	for _, addr := range mc.addrs {
+		mc.conn.WriteToUDP(raw, addr)
+	}
 	seenTags.Mark(msg.Tag)
 }
 
