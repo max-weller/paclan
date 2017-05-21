@@ -255,6 +255,7 @@ type multicaster struct {
 
 func serveMulticast(multicastAddrOption string, destAddrOption string) {
 	destHosts := strings.Split(destAddrOption, ",")
+	if destAddrOption == "" { destHosts = []string{} }
 	destIPList := make([]*net.UDPAddr, len(destHosts)+1)
 	for i := 0; i < len(destHosts); i++ {
 		a, err := net.ResolveUDPAddr("udp4", destHosts[i])
@@ -368,7 +369,11 @@ func (mc multicaster) listenLoop() {
 			log.Printf("Couldn't unserialize announce [%s]: %s\n", packet, err)
 			continue
 		}
-
+		
+		if msg.Id == paclanId {
+			log.Printf("Refusing to talk to myself\n")
+			return
+		}
 		peerIp := from.IP.String()
 		peerHttp := net.JoinHostPort(peerIp, msg.HttpPort)
 		log.Printf("Received message type=%s, from peer=%s\n", msg.Type, peerIp)
