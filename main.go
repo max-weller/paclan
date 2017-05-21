@@ -98,7 +98,7 @@ func (p peerMap) ShouldRenew(peerIp string) bool {
 	p.Lock()
 	peer, has := p.peers[peerIp]
 	p.Unlock()
-	return !has || time.Now().Before(peer.renew) 
+	return !has || time.Now().After(peer.renew) 
 }
 
 func (p peerMap) GetHttpHostsInRandomOrder() []string {
