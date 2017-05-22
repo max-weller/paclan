@@ -35,7 +35,7 @@ const (
 	HTTP_PORT         = `15678`
 	DEF_MULTICAST_ADDRESS = `224.3.45.67:15679`
 	TTL               = 1 * time.Hour
-	MULTICAST_DELAY   = 10 * time.Minute
+	DEF_MULTICAST_DELAY   = 10 //* time.Minute
 
 	// Note that we only provide packages, not dbs
 	PKG_CACHE_DIR = `/var/cache/pacman/pkg`
@@ -45,6 +45,7 @@ var (
 	peers    = newPeerMap()
 	paclanId = generateRandomTag()
 	debug    = false
+	MULTICAST_DELAY time.Duration
 )
 
 type peerMap struct {
@@ -70,7 +71,7 @@ func newPeerMap() peerMap {
 func (p peerMap) ExpireOldPeers() {
 	p.Lock()
 	for ip := range p.peers {
-		if time.Now().Before(p.peers[ip].expire) {
+		if time.Now().After(p.peers[ip].expire) {
 			delete(p.peers, ip)
 		}
 	}
@@ -137,8 +138,11 @@ func (p peerMap) GetPeerList() []string {
 func main() {
 	destAddrsPtr := flag.String("addrs", "", "additional, static peer addresses")
 	//mcAddrPtr := flag.String("multicast", DEF_MULTICAST_ADDRESS, "multicast address")
+	mcDelayPtr := flag.Int("interval", 10, "minutes to wait between pings")
 	flag.BoolVar(&debug, "v", false, "show debug output")
 	flag.Parse()
+	
+	MULTICAST_DELAY = time.Duration(*mcDelayPtr) * time.Minute
 	
 	log.Printf("my id is %s\n", paclanId)
 	
@@ -300,7 +304,7 @@ func (mc multicaster) sendAnnounce(typ string, nonce string, peerlist []string) 
 	if raw == nil { return }
 	for _, addr := range mc.addrs {
 		if addr == nil { continue }
-		if debug{log.Printf("Sending type=%s to ip=%s\n", typ, addr.String())}
+		if debug{log.Printf("Sending to %s: type=%s, peerlist=%s\n", addr.String(), typ, strings.Join(peerlist, " "))}
 		mc.conn.WriteToUDP(raw, addr)
 	}
 }
@@ -312,7 +316,7 @@ func (mc multicaster) sendAnnounceTo(destIP string, typ string, nonce string, pe
 		log.Printf("Invalid target address %s: %s\n", destIP, err)
 		return
 	}
-	if debug{log.Printf("Sending type=%s to ip=%s\n", typ, destIP)}
+	if debug{log.Printf("Sending to %s: type=%s, peerlist=%s\n", addr.String(), typ, strings.Join(peerlist, " "))}
 	mc.conn.WriteToUDP(raw, addr)
 }
 func buildAnnounce(typ string, nonce string, peerlist []string)  []byte{
